@@ -16,11 +16,19 @@ const emit = defineEmits<{
   (e: "unlock", password: string): void
   (e: "lock"): void
   (e: "reset"): void
+  (e: "export"): void
+  (e: "import", payload: string): void
+  (e: "change-password", payload: { oldPassword: string; newPassword: string; confirm: string }): void
 }>()
 
 const password = ref("")
 const confirm = ref("")
 const error = ref("")
+const importInput = ref<HTMLInputElement | null>(null)
+const oldPassword = ref("")
+const newPassword = ref("")
+const newConfirm = ref("")
+const showChange = ref(false)
 
 watch(
   () => props.status,
@@ -51,6 +59,51 @@ function handleUnlock() {
     return
   }
   emit("unlock", password.value)
+}
+
+function handleExport() {
+  emit("export")
+}
+
+function triggerImport() {
+  importInput.value?.click()
+}
+
+function handleImportFile(e: Event) {
+  const file = (e.target as HTMLInputElement)?.files?.[0]
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    const text = reader.result?.toString() ?? ""
+    emit("import", text)
+  }
+  reader.readAsText(file)
+  ;(e.target as HTMLInputElement).value = ""
+}
+
+function handleChangePassword() {
+  error.value = ""
+  if (!oldPassword.value) {
+    error.value = "请输入旧密码。"
+    return
+  }
+  if (newPassword.value.length < 8) {
+    error.value = "新密码至少 8 个字符。"
+    return
+  }
+  if (newPassword.value !== newConfirm.value) {
+    error.value = "两次新密码不一致。"
+    return
+  }
+  emit("change-password", {
+    oldPassword: oldPassword.value,
+    newPassword: newPassword.value,
+    confirm: newConfirm.value
+  })
+  oldPassword.value = ""
+  newPassword.value = ""
+  newConfirm.value = ""
+  showChange.value = false
 }
 </script>
 
@@ -84,6 +137,9 @@ function handleUnlock() {
         {{ busy ? "创建中..." : "创建保险库" }}
       </button>
       <p class="vault-hint">密码仅保存在本地设备。</p>
+      <div class="vault-actions-row">
+        <button class="vault-ghost" :disabled="busy" @click="triggerImport">导入备份</button>
+      </div>
     </div>
 
     <div v-else-if="status === 'locked'" class="vault-body">
@@ -98,6 +154,10 @@ function handleUnlock() {
       <button v-if="showReset" class="vault-reset" :disabled="busy" @click="emit('reset')">
         重置保险库
       </button>
+      <div class="vault-actions-row">
+        <button class="vault-ghost" :disabled="busy" @click="handleExport">导出备份</button>
+        <button class="vault-ghost" :disabled="busy" @click="triggerImport">导入备份</button>
+      </div>
     </div>
 
     <div v-else class="vault-body">
@@ -105,9 +165,35 @@ function handleUnlock() {
         <p>保险库就绪，可以阅读、写作与分享加密内容。</p>
         <button class="vault-ghost" :disabled="busy" @click="emit('lock')">锁定保险库</button>
       </div>
+      <div class="vault-actions-row">
+        <button class="vault-ghost" :disabled="busy" @click="handleExport">导出备份</button>
+        <button class="vault-ghost" :disabled="busy" @click="triggerImport">导入备份</button>
+        <button class="vault-ghost" :disabled="busy" @click="showChange = !showChange">
+          {{ showChange ? "收起改密" : "修改密码" }}
+        </button>
+      </div>
+
+      <div v-if="showChange" class="vault-change">
+        <div class="vault-field">
+          <label>旧密码</label>
+          <input v-model="oldPassword" type="password" placeholder="请输入旧密码" />
+        </div>
+        <div class="vault-field">
+          <label>新密码</label>
+          <input v-model="newPassword" type="password" placeholder="至少 8 个字符" />
+        </div>
+        <div class="vault-field">
+          <label>确认新密码</label>
+          <input v-model="newConfirm" type="password" placeholder="再次输入确认" />
+        </div>
+        <button class="vault-action" :disabled="busy" @click="handleChangePassword">
+          {{ busy ? "处理中..." : "确认修改" }}
+        </button>
+      </div>
     </div>
 
     <p v-if="error" class="vault-error">{{ error }}</p>
+    <input ref="importInput" type="file" accept="application/json" style="display: none" @change="handleImportFile" />
   </div>
 </template>
 
@@ -214,6 +300,22 @@ function handleUnlock() {
   border-radius: 10px;
   padding: 8px 12px;
   font-size: 13px;
+}
+
+.vault-actions-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.vault-change {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px dashed rgba(15, 23, 42, 0.15);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.7);
+  display: grid;
+  gap: 10px;
 }
 
 .vault-hint {

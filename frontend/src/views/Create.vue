@@ -178,23 +178,9 @@ function getProText() {
 }
 
 function switchMode(next: "simple" | "pro") {
-  if (next === editorMode.value) return
-  if (
-    next === "simple" &&
-    (assets.value.length > 0 || /<img|<video|<audio/i.test(valueHtml.value))
-  ) {
-    const confirmed = window.confirm("切换到简单模式会丢失媒体内容，确定继续吗？")
-    if (!confirmed) return
-    assets.value = []
-  }
-  if (next === "pro") {
-    valueHtml.value = content.value ? plainToHtml(content.value) : ""
-  } else {
-    const text = editorRef.value?.getText() ?? htmlToPlain(valueHtml.value)
-    content.value = text.trim()
-  }
-  editorMode.value = next
-  document.body.classList.toggle("pro-editor", next === "pro")
+  // 专业编写暂时隐藏，保持简单模式
+  editorMode.value = "simple"
+  document.body.classList.remove("pro-editor")
 }
 
 async function submit() {
@@ -318,7 +304,7 @@ watch([storageDuration, storageCustomDays], () => {
 
 <template>
   <div class="space-y-10 create-page" :class="{ 'pro-mode': isPro }">
-    <section v-if="!isPro" class="hero-shell">
+    <section class="hero-shell">
       <div class="hero-card compact">
         <div>
           <p class="hero-eyebrow">新日记</p>
@@ -328,7 +314,7 @@ watch([storageDuration, storageCustomDays], () => {
       </div>
     </section>
 
-    <section v-if="!isPro">
+    <section>
       <VaultGate
         :status="vaultStore.status"
         :busy="vaultBusy"
@@ -343,25 +329,8 @@ watch([storageDuration, storageCustomDays], () => {
       <p v-if="vaultError" class="text-red-600 text-sm mt-2">{{ vaultError }}</p>
     </section>
 
-    <section v-if="!isPro" class="entry-form">
+    <section class="entry-form">
       <div class="form-card">
-        <div class="mode-switch">
-          <button
-            class="filter-pill"
-            :class="editorMode === 'simple' ? 'active' : ''"
-            @click="switchMode('simple')"
-          >
-            简单编写
-          </button>
-          <button
-            class="filter-pill"
-            :class="editorMode === 'pro' ? 'active' : ''"
-            @click="switchMode('pro')"
-          >
-            专业编写
-          </button>
-        </div>
-
         <div class="form-field">
           <label>标题</label>
           <input v-model="title" type="text" placeholder="给今天起个标题..." />
@@ -447,127 +416,6 @@ watch([storageDuration, storageCustomDays], () => {
           </p>
         </div>
       </div>
-    </section>
-
-    <section v-else class="pro-editor-page">
-      <div class="pro-header">
-        <div class="mode-switch">
-          <button class="filter-pill" :class="editorMode === 'simple' ? 'active' : ''" @click="switchMode('simple')">
-            简单编写
-          </button>
-          <button class="filter-pill" :class="editorMode === 'pro' ? 'active' : ''" @click="switchMode('pro')">
-            专业编写
-          </button>
-        </div>
-        <div class="pro-actions">
-          <button class="ghost-btn" type="button" @click="triggerAudioUpload">上传音频</button>
-          <button class="ghost-btn" type="button" @click="showPreview = !showPreview">
-            {{ showPreview ? "隐藏预览" : "显示预览" }}
-          </button>
-        </div>
-        <button
-          class="primary-btn"
-          :disabled="isSubmitting || !title || !getProText() || mood === 0"
-          @click="submit"
-        >
-          {{ isSubmitting ? "保存中..." : "保存到链上" }}
-        </button>
-      </div>
-
-      <div class="pro-title">
-        <input v-model="title" type="text" placeholder="输入日记标题..." />
-        <span class="tiny-note">图片/视频/音频将公开存储在 Walrus</span>
-      </div>
-
-      <div class="glass-card pro-settings">
-        <p class="tiny-note">保存有效期</p>
-        <div class="modal-options">
-          <button
-            v-for="option in storageOptions"
-            :key="option"
-            :class="['pill-btn', storageDuration === String(option) ? 'active' : '']"
-            @click="storageDuration = String(option)"
-          >
-            {{ option }}天
-          </button>
-          <button
-            class="pill-btn"
-            :class="storageDuration === 'custom' ? 'active' : ''"
-            @click="storageDuration = 'custom'"
-          >
-            自定义
-          </button>
-        </div>
-        <div v-if="storageDuration === 'custom'" class="share-custom">
-          <input
-            v-model="storageCustomDays"
-            type="number"
-            min="1"
-            :max="maxDays"
-            placeholder="输入天数"
-          />
-          <span class="share-custom-unit">天</span>
-        </div>
-        <p class="tiny-note">默认 30 天（约 {{ epochDays }} 天/epoch，最长 {{ maxDays }} 天）</p>
-        <p v-if="storageError" class="text-red-600 text-xs">{{ storageError }}</p>
-      </div>
-
-      <div v-if="vaultStore.status !== 'unlocked'" class="pro-vault">
-        <VaultGate
-          :status="vaultStore.status"
-          :busy="vaultBusy"
-          title="需要保险库"
-          subtitle="保存前请创建或解锁保险库。"
-          :showReset="true"
-          @create="handleVaultCreate"
-          @unlock="handleVaultUnlock"
-          @lock="vaultStore.lock"
-          @reset="handleVaultReset"
-        />
-        <p v-if="vaultError" class="text-red-600 text-sm mt-2">{{ vaultError }}</p>
-      </div>
-
-      <div class="rich-shell">
-        <div class="rich-layout" :class="{ 'preview-hidden': !showPreview }">
-          <div class="rich-editor">
-            <Toolbar :editor="editorRef" :defaultConfig="toolbarConfig" mode="default" />
-            <Editor
-              v-model="valueHtml"
-              :defaultConfig="editorConfig"
-              mode="default"
-              @onCreated="handleCreated"
-            />
-          </div>
-          <div v-if="showPreview" class="rich-preview">
-            <p class="rich-preview-title">实时预览</p>
-            <div v-if="valueHtml" class="rich-content" v-html="valueHtml"></div>
-            <p v-else class="rich-preview-empty">开始输入内容…</p>
-          </div>
-        </div>
-      </div>
-
-      <div class="pro-footer">
-        <div class="mood-grid">
-          <button
-            v-for="i in 5"
-            :key="i"
-            @click="mood = i"
-            :class="['mood-btn', mood === i ? 'active' : '']"
-          >
-            {{ ['😐', '🙂', '😊', '🤩', '🥳'][i - 1] }}
-          </button>
-        </div>
-        <p v-if="status" class="text-sm text-slate-500 text-center mt-3">{{ status }}</p>
-      </div>
-
-      <p v-if="mediaStatus" class="text-xs text-slate-500 mt-2">{{ mediaStatus }}</p>
-      <input
-        ref="audioInputRef"
-        type="file"
-        accept="audio/*"
-        style="display:none"
-        @change="handleAudioUpload"
-      />
     </section>
   </div>
 </template>

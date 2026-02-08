@@ -64,6 +64,7 @@ const copyToast = ref("")
 let copyToastTimer: number | null = null
 const unlockBusy = ref<Record<string, boolean>>({})
 const unlockError = ref<Record<string, string>>({})
+const downloadLinkRef = ref<HTMLAnchorElement | null>(null)
 
 const client = new SuiClient({ url: getFullnodeUrl(SUI_NETWORK as any) })
 const readPackageIds = SUI_PACKAGE_IDS
@@ -629,6 +630,16 @@ async function cleanupShare(shareId: string) {
   }
 }
 
+async function deleteShare(shareId: string, expiry?: number, exists?: boolean) {
+  // only allow deletion if already revoked and expired (or missing on-chain)
+  const now = Date.now()
+  if (exists && expiry && now <= expiry) {
+    showCopyToast("尚未到期，暂不能删除")
+    return
+  }
+  await cleanupShare(shareId)
+}
+
 async function handleVaultCreate(payload: { password: string; confirm?: string }) {
   if (!walletStore.currentAccount) return
   vaultBusy.value = true
@@ -650,6 +661,61 @@ async function handleVaultUnlock(password: string) {
     await vaultStore.unlock(walletStore.currentAccount, password)
   } catch (e: any) {
     vaultError.value = e?.message ?? "解锁保险库失败。"
+  } finally {
+    vaultBusy.value = false
+  }
+}
+
+async function handleVaultChangePassword(payload: { oldPassword: string; newPassword: string }) {
+  if (!walletStore.currentAccount) return
+  vaultBusy.value = true
+  vaultError.value = ""
+  try {
+    await vaultStore.changePassword(walletStore.currentAccount, payload.oldPassword, payload.newPassword)
+    showCopyToast("密码已更新")
+  } catch (e: any) {
+    vaultError.value = e?.message ?? "修改密码失败。"
+  } finally {
+    vaultBusy.value = false
+  }
+}
+
+function handleVaultExport() {
+  if (!walletStore.currentAccount) {
+    vaultError.value = "请先连接钱包。"
+    return
+  }
+  try {
+    const data = vaultStore.exportBackup(walletStore.currentAccount)
+    const blob = new Blob([data], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const name = `suilog-vault-${walletStore.currentAccount}-${Date.now()}.json`
+    const link = downloadLinkRef.value || document.createElement("a")
+    link.href = url
+    link.download = name
+    link.style.display = "none"
+    document.body.appendChild(link)
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 2000)
+    showCopyToast("备份已导出")
+  } catch (e: any) {
+    vaultError.value = e?.message ?? "导出失败。"
+  }
+}
+
+async function handleVaultImport(content: string) {
+  if (!walletStore.currentAccount) {
+    vaultError.value = "请先连接钱包。"
+    return
+  }
+  vaultBusy.value = true
+  vaultError.value = ""
+  try {
+    vaultStore.importBackup(walletStore.currentAccount, content)
+    await vaultStore.sync(walletStore.currentAccount)
+    showCopyToast("备份已导入，请输入密码解锁")
+  } catch (e: any) {
+    vaultError.value = e?.message ?? "导入失败。"
   } finally {
     vaultBusy.value = false
   }
@@ -730,6 +796,9 @@ watch(
         @unlock="handleVaultUnlock"
         @lock="vaultStore.lock"
         @reset="handleVaultReset"
+        @export="handleVaultExport"
+        @import="handleVaultImport"
+        @change-password="payload => handleVaultChangePassword({ oldPassword: payload.oldPassword, newPassword: payload.newPassword })"
       />
       <p v-if="vaultError" class="text-red-600 text-sm">{{ vaultError }}</p>
     </section>
@@ -874,6 +943,14 @@ watch(
                 @click="revokeShare(share.id)"
               >
                 撤销
+              </button>
+              <button
+                v-if="share.status === 'revoked'"
+                class="ghost-btn danger"
+                :disabled="shareActionBusy === share.id"
+                @click="deleteShare(share.id, share.expiry, share.exists)"
+              >
+                删除
               </button>
             </div>
           </div>

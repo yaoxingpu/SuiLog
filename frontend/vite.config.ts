@@ -14,4 +14,7 @@ export default defineConfig({
       ],
     },
   },
+  server: {
+    port: 5173, // fixed port so localStorage origin stays consistent (vault relies on it)
+  },
 })

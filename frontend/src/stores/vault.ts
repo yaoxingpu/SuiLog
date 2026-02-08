@@ -61,6 +61,26 @@ export const useVaultStore = defineStore("vault", () => {
     await VaultService.saveSessionKey(account, key)
   }
 
+  async function changePassword(account: string, oldPassword: string, newPassword: string) {
+    await VaultService.changePassword(account, oldPassword, newPassword)
+    // vault key stays the same; ensure session key present
+    const metaKey = await VaultService.unlockVault(account, newPassword)
+    vaultKey.value = metaKey
+    status.value = "unlocked"
+    await VaultService.saveSessionKey(account, metaKey)
+  }
+
+  function exportBackup(account: string): string {
+    return VaultService.exportVault(account)
+  }
+
+  function importBackup(account: string, payload: string) {
+    VaultService.importVault(account, payload)
+    status.value = "locked"
+    vaultKey.value = null
+    VaultService.clearSessionKey(account)
+  }
+
   function lock() {
     vaultKey.value = null
     if (currentAccount.value) {
@@ -82,7 +102,10 @@ export const useVaultStore = defineStore("vault", () => {
     sync,
     createVault,
     unlock,
+    changePassword,
     lock,
-    clear
+    clear,
+    exportBackup,
+    importBackup
   }
 })

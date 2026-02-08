@@ -13,6 +13,13 @@ type VaultMeta = {
   createdAt: number
 }
 
+export type VaultBackup = {
+  version: 1
+  address: string
+  meta: VaultMeta
+  exportedAt: number
+}
+
 function storageKey(address: string) {
   return `${STORAGE_PREFIX}${address}`
 }
@@ -119,5 +126,67 @@ export class VaultService {
 
   static clearSessionKey(address: string) {
     sessionStorage.removeItem(sessionKey(address))
+  }
+
+  // Re-wrap vault key with a new password; does not change vault key itself
+  static async changePassword(address: string, oldPassword: string, newPassword: string): Promise<void> {
+    const meta = VaultService.loadMeta(address)
+    if (!meta) {
+      throw new Error("未找到保险库")
+    }
+    const saltOld = fromBase64(meta.salt)
+    const ivOld = fromBase64(meta.iv)
+    const cipherOld = fromBase64(meta.cipher)
+    const oldKey = await CryptoService.deriveKeyFromPassword(oldPassword, saltOld, meta.iterations)
+    const raw = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv: ivOld }, oldKey, cipherOld)
+
+    const saltNew = window.crypto.getRandomValues(new Uint8Array(16))
+    const ivNew = window.crypto.getRandomValues(new Uint8Array(12))
+    const newKey = await CryptoService.deriveKeyFromPassword(newPassword, saltNew, ITERATIONS)
+    const cipherNew = await window.crypto.subtle.encrypt({ name: "AES-GCM", iv: ivNew }, newKey, raw)
+
+    const newMeta: VaultMeta = {
+      version: 1,
+      salt: toBase64(saltNew),
+      iv: toBase64(ivNew),
+      cipher: toBase64(new Uint8Array(cipherNew)),
+      iterations: ITERATIONS,
+      createdAt: Date.now()
+    }
+    localStorage.setItem(storageKey(address), JSON.stringify(newMeta))
+    const vaultKey = await CryptoService.importKey(new Uint8Array(raw))
+    await VaultService.saveSessionKey(address, vaultKey)
+  }
+
+  static exportVault(address: string): string {
+    const meta = VaultService.loadMeta(address)
+    if (!meta) throw new Error("未找到保险库")
+    const backup: VaultBackup = {
+      version: 1,
+      address,
+      meta,
+      exportedAt: Date.now()
+    }
+    return JSON.stringify(backup)
+  }
+
+  static importVault(address: string, payload: string) {
+    let parsed: VaultBackup
+    try {
+      parsed = JSON.parse(payload) as VaultBackup
+    } catch {
+      throw new Error("备份文件格式错误")
+    }
+    if (!parsed || parsed.version !== 1 || !parsed.meta) {
+      throw new Error("备份版本不兼容")
+    }
+    if (parsed.address !== address) {
+      throw new Error("备份与当前地址不匹配")
+    }
+    if (parsed.meta.version !== 1) {
+      throw new Error("保险库版本不兼容")
+    }
+    localStorage.setItem(storageKey(address), JSON.stringify(parsed.meta))
+    VaultService.clearSessionKey(address)
   }
 }

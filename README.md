@@ -65,10 +65,19 @@ VITE_SUI_NETWORK=testnet
 VITE_SUILOG_PACKAGE_ID=0xYOUR_PACKAGE_ID
 VITE_WALRUS_AGGREGATOR=https://aggregator.walrus-testnet.walrus.space
 VITE_WALRUS_PUBLISHER=https://publisher.walrus-testnet.walrus.space
+VITE_SUILOG_MOOD_BOARD_ID=0xYOUR_MOOD_BOARD_OBJECT   # 可选：链上情绪看板
 
 # Optional: read legacy entries from older packages
 VITE_SUILOG_PACKAGE_IDS=0xOLD_PACKAGE_ID,0xANOTHER_ID
 ```
+
+## Hackathon Submission Checklist
+- ✅ 项目创建时间 ≥ 2026-01-27
+- ✅ Move 版本：2024 语法；使用最新 Sui SDK
+- ✅ 开源仓库 + 可运行站点（建议部署到 suins/Vercel）
+- ✅ 前端 `.env` 填写 `VITE_SUILOG_PACKAGE_ID` 与 `VITE_SUILOG_MOOD_BOARD_ID`
+- ✅ Demo 视频 1 分钟内可访问
+- ✅ AI 使用披露：列出模型与提示词（放入 README 链接或 docs/ai-prompts.md）
 
 ## Frontend (Local Dev)
 ```bash
@@ -156,6 +165,8 @@ VITE_SUILOG_PACKAGE_ID=0xYOUR_PACKAGE_ID
 VITE_WALRUS_AGGREGATOR=https://aggregator.walrus-testnet.walrus.space
 VITE_WALRUS_PUBLISHER=https://publisher.walrus-testnet.walrus.space
 
+`注意：本地启动时修改VITE_SUILOG_PACKAGE_ID为自己的package id`
+
 # 可选：读取旧合约包的日记
 VITE_SUILOG_PACKAGE_IDS=0xOLD_PACKAGE_ID,0xANOTHER_ID
 ```
@@ -178,5 +189,8 @@ sui client publish --gas-budget 100000000
 - Walrus **testnet** 可能会重置数据。
 - 保险库重置后，旧日记无法解密。
 - 旧合约包日记支持读取，但分享功能有限。
+
+## AI使用
+-- Codex，模型使用GPT-5.1-Codex-Max/GPT-5.2-Codex
 
 </details>

@@ -9,7 +9,7 @@ import { useVaultStore } from "../stores/vault"
 import { useDiaryStore, type DiaryEntryView, type ShareEventView } from "../stores/diary"
 import { CryptoService } from "../services/crypto"
 import { WalrusService } from "../services/walrus"
-import { SUI_NETWORK, SUI_PACKAGE_ID, SUI_PACKAGE_IDS } from "../services/config"
+import { SUI_NETWORK, SUI_PACKAGE_ID, SUI_PACKAGE_IDS, SUI_MOOD_BOARD_ID } from "../services/config"
 import VaultGate from "../components/VaultGate.vue"
 
 const walletStore = useWalletStore()
@@ -58,6 +58,7 @@ const shareLink = ref("")
 const shareExpiresAt = ref<number | null>(null)
 const shareLoading = ref(false)
 const shareActionBusy = ref<string | null>(null)
+const bulkShareBusy = ref(false)
 const shareFilter = ref<"all" | "active" | "expired" | "revoked" | "deleted">("all")
 const shareQuery = ref("")
 const copyToast = ref("")
@@ -65,9 +66,13 @@ let copyToastTimer: number | null = null
 const unlockBusy = ref<Record<string, boolean>>({})
 const unlockError = ref<Record<string, string>>({})
 const downloadLinkRef = ref<HTMLAnchorElement | null>(null)
+const expirySoonMs = 72 * 60 * 60 * 1000
+const moodBoardCounts = ref<number[] | null>(null)
+const moodBoardUpdatedAt = ref<number | null>(null)
 
 const client = new SuiClient({ url: getFullnodeUrl(SUI_NETWORK as any) })
 const readPackageIds = SUI_PACKAGE_IDS
+const moodBoardId = SUI_MOOD_BOARD_ID
 
 const hasWallet = computed(() => !!walletStore.currentAccount)
 const entryCount = computed(() => diaries.value.length)
@@ -80,7 +85,14 @@ const filteredDiaries = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
   let result = diaries.value.filter(entry => {
     const matchMood = moodFilter.value === 0 || entry.mood === moodFilter.value
-    const matchQuery = q.length === 0 || entry.title.toLowerCase().includes(q)
+    const decrypted = decryptedContent.value[entry.id]
+    const textPool = decrypted
+      ? (decrypted.text || "") + " " + (decrypted.html || "").replace(/<[^>]+>/g, " ")
+      : ""
+    const matchQuery =
+      q.length === 0 ||
+      entry.title.toLowerCase().includes(q) ||
+      textPool.toLowerCase().includes(q)
     return matchMood && matchQuery
   })
   if (sortOrder.value === "asc") {
@@ -90,9 +102,9 @@ const filteredDiaries = computed(() => {
 })
 
 const moodStats = computed(() => {
-  const counts = [0, 0, 0, 0, 0]
+  const counts: number[] = [0, 0, 0, 0, 0]
   diaries.value.forEach(entry => {
-    if (entry.mood >= 1 && entry.mood <= 5) counts[entry.mood - 1] += 1
+    if (entry.mood >= 1 && entry.mood <= 5) counts[entry.mood - 1]! += 1
   })
   return counts
 })
@@ -102,7 +114,7 @@ const dominantMood = computed(() => {
   const counts = moodStats.value
   let maxIndex = 0
   counts.forEach((count, index) => {
-    if (count > counts[maxIndex]) maxIndex = index
+    if (count > counts[maxIndex]!) maxIndex = index
   })
   return `${moodEmoji[maxIndex]} ${moodLabels[maxIndex]}`
 })
@@ -110,6 +122,7 @@ const dominantMood = computed(() => {
 const lastEntryDate = computed(() => {
   if (diaries.value.length === 0) return "—"
   const latest = diaries.value[0]
+  if (!latest) return "—"
   return new Date(latest.timestamp).toLocaleDateString()
 })
 
@@ -123,6 +136,33 @@ const filteredShares = computed(() => {
       share.entryId.toLowerCase().includes(query)
     return matchStatus && matchQuery
   })
+})
+
+const soonExpiringEntries = computed(() =>
+  diaries.value.filter(entry => {
+    const info = decryptedContent.value[entry.id]
+    if (!info?.expiresAt) return false
+    const remain = info.expiresAt - Date.now()
+    return remain > 0 && remain <= expirySoonMs
+  })
+)
+
+const soonExpiringShares = computed(() =>
+  shareEvents.value.filter(
+    share => share.status === "active" && share.expiry - Date.now() > 0 && share.expiry - Date.now() <= expirySoonMs
+  )
+)
+
+const moodBoardStats = computed(() => {
+  if (!moodBoardCounts.value) return null
+  const total = moodBoardCounts.value.reduce((a, b) => a + b, 0)
+  return { counts: moodBoardCounts.value, total, updatedAt: moodBoardUpdatedAt.value }
+})
+
+const moodBarCounts = computed(() => moodBoardStats.value?.counts ?? moodStats.value)
+const moodBarTotal = computed(() => {
+  const total = moodBoardStats.value?.total ?? entryCount.value ?? 0
+  return Math.max(1, total)
 })
 
 function toU8(value: any): Uint8Array {
@@ -168,12 +208,12 @@ async function loadEntries(reset = false) {
   try {
     const events = await client.queryEvents({
       query: { MoveEventType: `${SUI_PACKAGE_ID}::diary::EntryCreated` },
-      cursor: eventCursor.value ?? undefined,
+      cursor: (eventCursor.value as any) ?? undefined,
       limit: pageSize,
       order: "descending"
     })
 
-    eventCursor.value = (events.nextCursor as string) ?? null
+    eventCursor.value = events.nextCursor ? String(events.nextCursor) : null
     hasNextPage.value = events.hasNextPage
 
     const entryIds = events.data
@@ -214,6 +254,7 @@ async function loadEntries(reset = false) {
           iv: toU8(content.fields.iv),
           encryptedDek: toU8(content.fields.encrypted_dek),
           dekIv: toU8(content.fields.dek_iv),
+          unlockAt: Number(content.fields.unlock_at ?? 0),
           packageId: SUI_PACKAGE_ID
         } as DiaryEntryView
       })
@@ -284,17 +325,18 @@ async function fetchOwnedEntriesFromPackages() {
         .map(obj => {
           const content = obj.data?.content as any
           if (!content?.fields) return null
-          return {
-            id: obj.data?.objectId as string,
-            title: content.fields.title as string,
-            blobId: content.fields.content_blob_id as string,
-            mood: Number(content.fields.mood),
-            timestamp: Number(content.fields.timestamp),
-            iv: toU8(content.fields.iv),
-            encryptedDek: toU8(content.fields.encrypted_dek),
-            dekIv: toU8(content.fields.dek_iv),
-            packageId: pkg
-          } as DiaryEntryView
+      return {
+        id: obj.data?.objectId as string,
+        title: content.fields.title as string,
+        blobId: content.fields.content_blob_id as string,
+        mood: Number(content.fields.mood),
+        timestamp: Number(content.fields.timestamp),
+        iv: toU8(content.fields.iv),
+        encryptedDek: toU8(content.fields.encrypted_dek),
+        dekIv: toU8(content.fields.dek_iv),
+        unlockAt: Number(content.fields.unlock_at ?? 0),
+        packageId: pkg
+      } as DiaryEntryView
         })
         .filter(Boolean) as DiaryEntryView[]
     })
@@ -311,6 +353,11 @@ async function unlock(entry: DiaryEntryView) {
   if (!vaultStore.vaultKey) {
     vaultError.value = "请先解锁保险库再解密内容。"
     unlockError.value[entry.id] = "请先解锁保险库。"
+    return
+  }
+  if (entry.unlockAt && Date.now() < entry.unlockAt) {
+    const unlockTime = new Date(entry.unlockAt).toLocaleString()
+    unlockError.value[entry.id] = `尚未到解锁时间：${unlockTime}`
     return
   }
 
@@ -346,7 +393,7 @@ async function unlock(entry: DiaryEntryView) {
     } else {
       unlockError.value[entry.id] = "解密失败，请检查保险库密码。"
     }
-    vaultError.value = unlockError.value[entry.id]
+    vaultError.value = unlockError.value[entry.id] ?? ""
   } finally {
     unlockBusy.value[entry.id] = false
   }
@@ -552,6 +599,27 @@ async function loadShares() {
   }
 }
 
+async function loadMoodBoard() {
+  if (!moodBoardId) {
+    moodBoardCounts.value = null
+    moodBoardUpdatedAt.value = null
+    return
+  }
+  try {
+    const obj = await client.getObject({
+      id: moodBoardId,
+      options: { showContent: true }
+    })
+    const content = obj.data?.content as any
+    if (!content?.fields) return
+    const counts = (content.fields.counts as any[])?.map((v: any) => Number(v)) ?? []
+    moodBoardCounts.value = counts
+    moodBoardUpdatedAt.value = Number(content.fields.last_updated ?? 0)
+  } catch (e) {
+    console.error("loadMoodBoard failed", e)
+  }
+}
+
 async function copyShareEventLink(link: string) {
   try {
     await navigator.clipboard.writeText(link)
@@ -638,6 +706,23 @@ async function deleteShare(shareId: string, expiry?: number, exists?: boolean) {
     return
   }
   await cleanupShare(shareId)
+}
+
+async function cleanupExpiredSharesBulk() {
+  const targets = shareEvents.value.filter(share => share.status === "expired" && share.exists)
+  if (targets.length === 0) return
+  bulkShareBusy.value = true
+  try {
+    for (const share of targets) {
+      await cleanupShare(share.id)
+    }
+    await loadShares()
+    showCopyToast("已清理过期分享")
+  } catch (e) {
+    console.error(e)
+  } finally {
+    bulkShareBusy.value = false
+  }
 }
 
 async function handleVaultCreate(payload: { password: string; confirm?: string }) {
@@ -751,6 +836,7 @@ watch(
     if (shareLoadedAt.value === null) {
       await loadShares()
     }
+    await loadMoodBoard()
   },
   { immediate: true }
 )
@@ -816,17 +902,31 @@ watch(
       </div>
       <div class="glass-card">
         <p class="hero-eyebrow">心情趋势</p>
-        <h3 class="insight-value">{{ dominantMood }}</h3>
+        <h3 class="insight-value">
+          {{ moodBoardStats ? '链上' : '本地' }} · {{ dominantMood }}
+        </h3>
+        <p class="section-subtitle" v-if="moodBoardStats">
+          链上计数，更新于 {{ moodBoardStats.updatedAt ? new Date(moodBoardStats.updatedAt).toLocaleString() : '—' }}
+        </p>
         <div class="mood-bars">
           <div
-            v-for="(count, index) in moodStats"
+            v-for="(value, index) in moodBarCounts"
             :key="index"
             class="mood-bar"
-            :style="{ width: `${Math.max(12, (count / Math.max(1, entryCount)) * 100)}%` }"
+            :style="{
+              width: `${Math.max(12, ((value ?? 0) / moodBarTotal) * 100)}%`
+            }"
           >
-            <span>{{ moodEmoji[index] }} {{ count }}</span>
+            <span>{{ moodEmoji[index] }} {{ value ?? 0 }}</span>
           </div>
         </div>
+      </div>
+      <div class="glass-card">
+        <p class="hero-eyebrow">到期提醒</p>
+        <h3 class="insight-value">
+          {{ soonExpiringEntries.length }} 篇 · {{ soonExpiringShares.length }} 分享
+        </h3>
+        <p class="section-subtitle">72 小时内即将失效，记得续期或导出。</p>
       </div>
     </section>
 
@@ -884,6 +984,13 @@ watch(
               已删除
             </button>
           </div>
+          <button
+            class="ghost-btn"
+            :disabled="bulkShareBusy || soonExpiringShares.length === 0"
+            @click="cleanupExpiredSharesBulk"
+          >
+            {{ bulkShareBusy ? '清理中...' : '清理过期分享' }}
+          </button>
         </div>
 
         <div v-if="filteredShares.length === 0" class="glass-card text-center py-10">
@@ -907,6 +1014,9 @@ watch(
             <div class="share-actions">
               <span class="share-status" :class="share.status">
                 {{ share.status === 'active' ? '有效' : share.status === 'expired' ? '已过期' : share.status === 'revoked' ? '已撤销' : '已删除' }}
+              </span>
+              <span v-if="share.status === 'active' && share.expiry - Date.now() <= expirySoonMs" class="tiny-note text-amber-600">
+                即将到期
               </span>
               <button
                 class="ghost-btn"
@@ -1024,7 +1134,7 @@ watch(
                 ·
                 {{ new Date(Number(diary.timestamp)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}
                 <span v-if="decryptedContent[diary.id]?.expiresAt">
-                  · 有效期至 {{ new Date(decryptedContent[diary.id].expiresAt!).toLocaleDateString() }}
+                  · 有效期至 {{ decryptedContent[diary.id]?.expiresAt ? new Date(decryptedContent[diary.id]!.expiresAt as number).toLocaleDateString() : '' }}
                 </span>
               </p>
             </div>
@@ -1034,11 +1144,18 @@ watch(
           <div class="entry-body">
             <div v-if="decryptedContent[diary.id]" class="entry-text">
               <div
-                v-if="decryptedContent[diary.id].type === 'rich'"
+                v-if="decryptedContent[diary.id]?.type === 'rich'"
                 class="rich-content"
-                v-html="decryptedContent[diary.id].html"
+                v-html="decryptedContent[diary.id]?.html"
               ></div>
-              <p v-else>{{ decryptedContent[diary.id].text }}</p>
+              <p v-else>{{ decryptedContent[diary.id]?.text }}</p>
+              <p v-if="decryptedContent[diary.id]?.expiresAt" class="tiny-note text-amber-600 mt-2">
+                {{
+                  decryptedContent[diary.id]!.expiresAt! - Date.now() > 0
+                    ? '有效期：' + new Date(decryptedContent[diary.id]!.expiresAt as number).toLocaleString()
+                    : '已过期，内容可能被 Walrus 清理'
+                }}
+              </p>
             </div>
             <div v-else class="space-y-2">
               <button class="unlock-btn" :disabled="unlockBusy[diary.id]" @click="unlock(diary)">
@@ -1053,7 +1170,7 @@ watch(
           <div class="entry-actions">
             <button
               class="ghost-btn"
-              :disabled="vaultStore.status !== 'unlocked' || (diary.packageId && diary.packageId !== SUI_PACKAGE_ID)"
+              :disabled="vaultStore.status !== 'unlocked' || !!(diary.packageId && diary.packageId !== SUI_PACKAGE_ID)"
               :title="diary.packageId && diary.packageId !== SUI_PACKAGE_ID ? '旧版本日记暂不支持分享' : ''"
               @click="openShare(diary)"
             >

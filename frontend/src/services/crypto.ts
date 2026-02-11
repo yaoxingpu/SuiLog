@@ -11,14 +11,17 @@ export class CryptoService {
     data: string | ArrayBuffer | Uint8Array,
     key: CryptoKey,
     iv?: Uint8Array
-  ): Promise<{ cipherText: ArrayBuffer, iv: Uint8Array }> {
+  ): Promise<{ cipherText: ArrayBuffer; iv: Uint8Array }> {
     const ivBytes = iv ?? window.crypto.getRandomValues(new Uint8Array(12));
-    const encoded = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-    
+    const encoded: Uint8Array =
+      typeof data === "string" ? new TextEncoder().encode(data) : new Uint8Array(data);
+    const payloadArray = new Uint8Array(encoded);
+    const payload: ArrayBuffer = payloadArray.buffer;
+
     const cipherText = await window.crypto.subtle.encrypt(
-      { name: "AES-GCM", iv: ivBytes as any },
+      { name: "AES-GCM", iv: ivBytes as unknown as BufferSource },
       key,
-      encoded
+      payload
     );
     return { cipherText, iv: ivBytes };
   }
@@ -28,11 +31,13 @@ export class CryptoService {
     key: CryptoKey,
     iv: Uint8Array
   ): Promise<ArrayBuffer> {
-    const data = cipherText instanceof Uint8Array ? cipherText : new Uint8Array(cipherText)
+    const data: Uint8Array = cipherText instanceof Uint8Array ? cipherText : new Uint8Array(cipherText);
+    const payloadArray = new Uint8Array(data);
+    const payload: ArrayBuffer = payloadArray.buffer;
     return window.crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: iv as any },
+      { name: "AES-GCM", iv: iv as unknown as BufferSource },
       key,
-      data
+      payload
     );
   }
 
@@ -44,7 +49,7 @@ export class CryptoService {
   static async importKey(raw: Uint8Array): Promise<CryptoKey> {
     return window.crypto.subtle.importKey(
       "raw",
-      raw as any,
+      raw as unknown as BufferSource,
       { name: "AES-GCM" },
       true,
       ["encrypt", "decrypt"]
@@ -66,7 +71,7 @@ export class CryptoService {
     return window.crypto.subtle.deriveKey(
       {
         name: "PBKDF2",
-        salt,
+        salt: salt as unknown as BufferSource,
         iterations,
         hash: "SHA-256"
       },

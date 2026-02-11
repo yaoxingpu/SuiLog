@@ -30,8 +30,8 @@ function sessionKey(address: string) {
 
 function toBase64(bytes: Uint8Array): string {
   let binary = ""
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i])
+  for (const b of bytes) {
+    binary += String.fromCharCode(b)
   }
   return btoa(binary)
 }
@@ -97,10 +97,12 @@ export class VaultService {
     const iv = fromBase64(meta.iv)
     const cipher = fromBase64(meta.cipher)
     const passwordKey = await CryptoService.deriveKeyFromPassword(password, salt, meta.iterations)
+    const cipherArray = new Uint8Array(cipher)
+    const cipherPayload = cipherArray.buffer
     const raw = await window.crypto.subtle.decrypt(
-      { name: "AES-GCM", iv },
+      { name: "AES-GCM", iv: iv as unknown as BufferSource },
       passwordKey,
-      cipher
+      cipherPayload
     )
     return CryptoService.importKey(new Uint8Array(raw))
   }
@@ -138,12 +140,21 @@ export class VaultService {
     const ivOld = fromBase64(meta.iv)
     const cipherOld = fromBase64(meta.cipher)
     const oldKey = await CryptoService.deriveKeyFromPassword(oldPassword, saltOld, meta.iterations)
-    const raw = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv: ivOld }, oldKey, cipherOld)
+    const cipherOldPayload = new Uint8Array(cipherOld).buffer
+    const raw = await window.crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: ivOld as unknown as BufferSource },
+      oldKey,
+      cipherOldPayload
+    )
 
     const saltNew = window.crypto.getRandomValues(new Uint8Array(16))
     const ivNew = window.crypto.getRandomValues(new Uint8Array(12))
     const newKey = await CryptoService.deriveKeyFromPassword(newPassword, saltNew, ITERATIONS)
-    const cipherNew = await window.crypto.subtle.encrypt({ name: "AES-GCM", iv: ivNew }, newKey, raw)
+    const cipherNew = await window.crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: ivNew as unknown as BufferSource },
+      newKey,
+      raw
+    )
 
     const newMeta: VaultMeta = {
       version: 1,

@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import "@wangeditor/editor/dist/css/style.css"
-import { ref, watch, shallowRef, computed, onBeforeUnmount } from "vue"
+import { ref, watch, computed, onBeforeUnmount, onMounted } from "vue"
 import { useRouter } from "vue-router"
 import { Transaction } from "@mysten/sui/transactions"
 import { useWalletStore } from "../stores/wallet"
@@ -8,10 +7,8 @@ import { useVaultStore } from "../stores/vault"
 import { useDiaryStore } from "../stores/diary"
 import { CryptoService } from "../services/crypto"
 import { WalrusService } from "../services/walrus"
-import { SUI_PACKAGE_ID, SUI_NETWORK } from "../services/config"
+import { SUI_PACKAGE_ID, SUI_NETWORK, SUI_MOOD_BOARD_ID } from "../services/config"
 import VaultGate from "../components/VaultGate.vue"
-import { Editor, Toolbar } from "@wangeditor/editor-for-vue"
-import type { IDomEditor, IEditorConfig, IToolbarConfig } from "@wangeditor/editor"
 
 const walletStore = useWalletStore()
 const vaultStore = useVaultStore()
@@ -20,69 +17,38 @@ const router = useRouter()
 
 const title = ref("")
 const content = ref("")
-const editorMode = ref<"simple" | "pro">("simple")
-const showPreview = ref(true)
 const mood = ref(0)
 const isSubmitting = ref(false)
 const status = ref("")
 const vaultBusy = ref(false)
 const vaultError = ref("")
 
-const editorRef = shallowRef<IDomEditor | null>(null)
-const valueHtml = ref("")
-const mediaStatus = ref("")
-const audioInputRef = ref<HTMLInputElement | null>(null)
 const storageDuration = ref("30")
 const storageCustomDays = ref("")
 const storageError = ref("")
+const unlockOptions = ["0", "6", "24"] as const
+const unlockPreset = ref<"0" | "6" | "24" | "custom">("0")
+const unlockCustomHours = ref("")
+const unlockError = ref("")
 const maxEpochs = 53
 const epochDays = computed(() => (SUI_NETWORK === "mainnet" ? 14 : 1))
 const maxDays = computed(() => epochDays.value * maxEpochs)
 const storageOptions = computed(() => [7, 30, 90].filter(days => days <= maxDays.value))
+const lastDraftSavedAt = ref<number | null>(null)
+const hasDraft = ref(false)
+let draftTimer: number | null = null
+const draftKey = computed(() =>
+  walletStore.currentAccount ? `suilog-draft-${walletStore.currentAccount}` : "suilog-draft-anon"
+)
 
-type AssetItem = {
-  blobId: string
-  kind: "image" | "video" | "audio"
-  mime: string
-  name: string
-  size: number
-  url: string
-}
-
-const assets = ref<AssetItem[]>([])
-const isPro = computed(() => editorMode.value === "pro")
-
-const toolbarConfig: Partial<IToolbarConfig> = {}
-
-const editorConfig: Partial<IEditorConfig> = {
-  placeholder: "开始专业写作...",
-  MENU_CONF: {
-    uploadImage: {
-      customUpload: async (file: File, insertFn: (url: string, alt: string, href: string) => void) => {
-        const asset = await uploadFile(file, "image")
-        insertFn(asset.url, asset.name, asset.url)
-      }
-    },
-    uploadVideo: {
-      customUpload: async (file: File, insertFn: (url: string, poster?: string) => void) => {
-        const asset = await uploadFile(file, "video")
-        insertFn(asset.url, "")
-      }
-    }
-  }
-}
-
-
-function handleCreated(editor: IDomEditor) {
-  editorRef.value = editor
-}
+const isPro = computed(() => false)
 
 onBeforeUnmount(() => {
-  if (editorRef.value) {
-    editorRef.value.destroy()
-    editorRef.value = null
-  }
-  document.body.classList.remove("pro-editor")
+  if (draftTimer) window.clearTimeout(draftTimer)
+})
+
+onMounted(() => {
+  loadDraft()
 })
 
 function plainToHtml(text: string) {
@@ -92,15 +58,6 @@ function plainToHtml(text: string) {
     .replace(/>/g, "&gt;")
     .replace(/\n/g, "<br/>")
   return `<p>${safe}</p>`
-}
-
-function htmlToPlain(html: string) {
-  try {
-    const doc = new DOMParser().parseFromString(html, "text/html")
-    return doc.body.textContent ?? ""
-  } catch {
-    return ""
-  }
 }
 
 function resolveStorageSettings() {
@@ -123,65 +80,78 @@ function resolveStorageSettings() {
   return { days, epochs }
 }
 
-async function uploadFile(file: File, kind: AssetItem["kind"]): Promise<AssetItem> {
-  mediaStatus.value = "正在上传媒体..."
+function resolveUnlockMs() {
+  let hours = 0
+  if (unlockPreset.value === "custom") {
+    hours = Number(unlockCustomHours.value)
+  } else {
+    hours = Number(unlockPreset.value)
+  }
+  if (!Number.isFinite(hours) || hours < 0) {
+    unlockError.value = "请输入有效的解锁小时数。"
+    return null
+  }
+  if (hours > 24 * 30) {
+    unlockError.value = "解锁时间不可超过 30 天。"
+    return null
+  }
+  unlockError.value = ""
+  return Math.floor(hours * 60 * 60 * 1000)
+}
+
+function saveDraft() {
+  if (draftTimer) window.clearTimeout(draftTimer)
+  draftTimer = window.setTimeout(() => {
+    const payload = {
+      title: title.value,
+      content: content.value,
+      mood: mood.value,
+      storageDuration: storageDuration.value,
+      storageCustomDays: storageCustomDays.value,
+      unlockPreset: unlockPreset.value,
+      unlockCustomHours: unlockCustomHours.value,
+      savedAt: Date.now()
+    }
+    try {
+      localStorage.setItem(draftKey.value, JSON.stringify(payload))
+      lastDraftSavedAt.value = payload.savedAt
+      hasDraft.value = Boolean(title.value || content.value)
+    } catch (e) {
+      console.error("保存草稿失败", e)
+    }
+  }, 500)
+}
+
+function loadDraft() {
   try {
-    const settings = resolveStorageSettings()
-    if (!settings) {
-      mediaStatus.value = storageError.value || "请先设置有效期。"
-      throw new Error(mediaStatus.value)
-    }
-    const blobId = await WalrusService.uploadBlob(file, { epochs: settings.epochs })
-    const url = WalrusService.getPublicUrl(blobId)
-    const asset: AssetItem = {
-      blobId,
-      kind,
-      mime: file.type,
-      name: file.name,
-      size: file.size,
-      url
-    }
-    assets.value = [...assets.value, asset]
-    mediaStatus.value = ""
-    return asset
+    const raw = localStorage.getItem(draftKey.value)
+    if (!raw) return
+    const parsed = JSON.parse(raw)
+    title.value = parsed.title ?? ""
+    content.value = parsed.content ?? ""
+    mood.value = parsed.mood ?? 0
+    storageDuration.value = parsed.storageDuration ?? "30"
+    storageCustomDays.value = parsed.storageCustomDays ?? ""
+    unlockPreset.value = parsed.unlockPreset ?? "0"
+    unlockCustomHours.value = parsed.unlockCustomHours ?? ""
+    lastDraftSavedAt.value = parsed.savedAt ?? null
+    hasDraft.value = true
   } catch (e) {
-    console.error(e)
-    mediaStatus.value = "媒体上传失败"
-    throw e
+    console.error("读取草稿失败", e)
   }
 }
 
-async function handleAudioUpload(e: Event) {
-  const target = e.target as HTMLInputElement
-  const file = target.files?.[0]
-  if (!file) return
+function clearDraft() {
   try {
-    const asset = await uploadFile(file, "audio")
-    ;(editorRef.value as any)?.dangerouslyInsertHtml(
-      `<p><audio controls src="${asset.url}"></audio></p>`
-    )
+    localStorage.removeItem(draftKey.value)
   } catch (e) {
     console.error(e)
-    mediaStatus.value = "音频上传失败"
-  } finally {
-    target.value = ""
   }
+  lastDraftSavedAt.value = null
+  hasDraft.value = false
 }
 
-function triggerAudioUpload() {
-  audioInputRef.value?.click()
-}
-
-function getProText() {
-  const text = editorRef.value?.getText() ?? htmlToPlain(valueHtml.value)
-  return text.trim()
-}
-
-function switchMode(next: "simple" | "pro") {
-  // 专业编写暂时隐藏，保持简单模式
-  editorMode.value = "simple"
-  document.body.classList.remove("pro-editor")
-}
+// 媒体/专业模式暂不开放，简化写作体验
 
 async function submit() {
   if (!walletStore.isConnected) {
@@ -197,26 +167,32 @@ async function submit() {
     status.value = storageError.value || "请先设置有效期。"
     return
   }
+  const unlockMs = resolveUnlockMs()
+  if (unlockMs === null) {
+    status.value = unlockError.value || "请先设置解锁时间。"
+    return
+  }
 
   isSubmitting.value = true
   status.value = "正在加密日记..."
 
   try {
     const dekKey = await CryptoService.generateKey()
-    const plainText = editorMode.value === "pro" ? getProText() : content.value.trim()
+    const plainText = content.value.trim()
 
     const now = Date.now()
     const diaryData = JSON.stringify({
       version: 2,
-      type: editorMode.value,
+      type: "simple",
       text: plainText,
-      html: editorMode.value === "pro" ? valueHtml.value : plainToHtml(content.value),
-      assets: editorMode.value === "pro" ? assets.value : [],
+      html: plainToHtml(content.value),
+      assets: [],
       createdAt: now,
       storedAt: now,
       storageDays: settings.days,
       storageEpochs: settings.epochs,
-      expiresAt: now + settings.days * 24 * 60 * 60 * 1000
+      expiresAt: now + settings.days * 24 * 60 * 60 * 1000,
+      unlockAt: now + unlockMs
     })
     const { cipherText: contentCipher, iv: contentIv } = await CryptoService.encrypt(diaryData, dekKey)
     const dekRaw = await CryptoService.exportKey(dekKey)
@@ -229,21 +205,31 @@ async function submit() {
 
     status.value = "正在确认链上交易..."
     const txb = new Transaction()
-    txb.moveCall({
-      target: `${SUI_PACKAGE_ID}::diary::create_entry`,
-      arguments: [
-        txb.pure.string(title.value),
-        txb.pure.string(blobId),
-        txb.pure.vector("u8", Array.from(contentIv)),
-        txb.pure.vector("u8", Array.from(new Uint8Array(dekCipher))),
-        txb.pure.vector("u8", Array.from(dekIv)),
-        txb.pure.u8(mood.value),
-        txb.object("0x6")
-      ]
-    })
+    const argsBase = [
+      txb.pure.string(title.value),
+      txb.pure.string(blobId),
+      txb.pure.vector("u8", Array.from(contentIv)),
+      txb.pure.vector("u8", Array.from(new Uint8Array(dekCipher))),
+      txb.pure.vector("u8", Array.from(dekIv)),
+      txb.pure.u8(mood.value),
+      txb.pure.u64(unlockMs)
+    ] as const
+
+    if (SUI_MOOD_BOARD_ID) {
+      txb.moveCall({
+        target: `${SUI_PACKAGE_ID}::diary::create_entry_with_board`,
+        arguments: [...argsBase, txb.object(SUI_MOOD_BOARD_ID), txb.object("0x6")]
+      })
+    } else {
+      txb.moveCall({
+        target: `${SUI_PACKAGE_ID}::diary::create_entry_v2`,
+        arguments: [...argsBase, txb.object("0x6")]
+      })
+    }
 
     await walletStore.signTransaction(txb)
     diaryStore.markDirty()
+    clearDraft()
     status.value = "创建成功，正在跳转..."
     setTimeout(() => router.push("/"), 1500)
   } catch (e: any) {
@@ -297,8 +283,16 @@ watch(
   { immediate: true }
 )
 
+watch([title, content, mood, storageDuration, storageCustomDays], () => {
+  saveDraft()
+})
+
 watch([storageDuration, storageCustomDays], () => {
   if (storageError.value) storageError.value = ""
+})
+
+watch([unlockPreset, unlockCustomHours], () => {
+  if (unlockError.value) unlockError.value = ""
 })
 </script>
 
@@ -379,6 +373,39 @@ watch([storageDuration, storageCustomDays], () => {
         </div>
 
         <div class="form-field">
+          <label>解锁时间</label>
+          <div class="modal-options">
+            <button
+              v-for="option in unlockOptions"
+              :key="option"
+              :class="['pill-btn', unlockPreset === option ? 'active' : '']"
+              @click="unlockPreset = option"
+            >
+              {{ option === '0' ? '立即可读' : option === '6' ? '6小时后' : '24小时后' }}
+            </button>
+            <button
+              class="pill-btn"
+              :class="unlockPreset === 'custom' ? 'active' : ''"
+              @click="unlockPreset = 'custom'"
+            >
+              自定义
+            </button>
+          </div>
+          <div v-if="unlockPreset === 'custom'" class="share-custom">
+            <input
+              v-model="unlockCustomHours"
+              type="number"
+              min="0"
+              max="720"
+              placeholder="输入小时数（0-720）"
+            />
+            <span class="share-custom-unit">小时</span>
+          </div>
+          <p class="tiny-note">时间胶囊：到达解锁时间前无法解密。</p>
+          <p v-if="unlockError" class="text-red-600 text-xs">{{ unlockError }}</p>
+        </div>
+
+        <div class="form-field">
           <label>你现在的心情？</label>
           <div class="mood-grid">
             <button
@@ -394,12 +421,16 @@ watch([storageDuration, storageCustomDays], () => {
 
         <button
           class="primary-btn w-full"
-          :disabled="isSubmitting || !title || (editorMode === 'simple' ? !content.trim() : !getProText()) || mood === 0"
+          :disabled="isSubmitting || !title || !content.trim() || mood === 0"
           @click="submit"
         >
           {{ isSubmitting ? "保存中..." : "保存到链上" }}
         </button>
         <p v-if="status" class="text-sm text-slate-500 text-center mt-3">{{ status }}</p>
+        <p v-if="hasDraft" class="text-xs text-emerald-600 text-center mt-1">
+          草稿已自动保存{{ lastDraftSavedAt ? ` · ${new Date(lastDraftSavedAt).toLocaleTimeString()}` : "" }}；提交失败时可以刷新恢复。
+        </p>
+        <p class="tiny-note text-center text-slate-400">提交交易前请确认网络与 gas 余额，防止上链失败。</p>
       </div>
 
       <div class="form-side">
@@ -413,6 +444,12 @@ watch([storageDuration, storageCustomDays], () => {
           <h4 class="section-title">分享规则</h4>
           <p class="section-subtitle">
             分享链接使用密码加密一次性密钥，并可自动过期。
+          </p>
+        </div>
+        <div class="glass-card">
+          <h4 class="section-title">备份提醒</h4>
+          <p class="section-subtitle">
+            建议在首页导出一次保险库备份（JSON），防止密码遗失导致历史日记无法解密。
           </p>
         </div>
       </div>

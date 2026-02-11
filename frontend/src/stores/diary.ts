@@ -11,6 +11,7 @@ export type DiaryEntryView = {
   encryptedDek: Uint8Array
   dekIv: Uint8Array
   packageId?: string
+  unlockAt?: number
 }
 
 export type ShareEventView = {

@@ -236,27 +236,28 @@ public fun share_expiry_for_testing(access: &SharedAccess): u64 {
     access.expiry
 }
 
-/// 初始化情绪看板
-public fun init_mood_board(clock: &Clock, ctx: &mut TxContext): MoodBoard {
-    let counts = vector::empty<u64>();
+/// 初始化情绪看板（创建后转给调用者）
+public entry fun init_mood_board(clock: &Clock, ctx: &mut TxContext) {
+    let mut counts = vector::empty<u64>();
     // moods 1..5
     vector::push_back(&mut counts, 0);
     vector::push_back(&mut counts, 0);
     vector::push_back(&mut counts, 0);
     vector::push_back(&mut counts, 0);
     vector::push_back(&mut counts, 0);
-    MoodBoard {
+    let board = MoodBoard {
         id: object::new(ctx),
         counts,
         last_updated: clock.timestamp_ms(),
-    }
+    };
+    transfer::transfer(board, ctx.sender());
 }
 
 /// 更新情绪计数
 public fun bump_mood(board: &mut MoodBoard, mood: u8, clock: &Clock) {
     if (mood < 1 || mood > 5) {
         return;
-    }
+    };
     let idx = (mood - 1) as u64;
     let current = *vector::borrow(&board.counts, idx);
     *vector::borrow_mut(&mut board.counts, idx) = current + 1;
